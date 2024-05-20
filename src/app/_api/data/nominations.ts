@@ -11,6 +11,8 @@ import { JobTypes } from "../helpers/job-types";
 import { getCurrentUser, getUserBalances } from "./users";
 import { User } from "./users";
 import { WalletInfo, createWallet, getWalletFromExternal } from "./wallets";
+import  { EAS, SchemaEncoder }  from "@ethereum-attestation-service/eas-sdk";
+import { Wallet } from "ethers";
 
 export type Nomination = {
   id: number;
@@ -67,6 +69,32 @@ const SELECT_NOMINATIONS_TO_USER = `
     )
   )
 ` as const;
+
+const easContractAddress = "0x4200000000000000000000000000000000000021";
+const schemaUID = "0x5e0dc83b2de7b440d03ad0b07f85869f7eff68fb32a11849a4c12a2b2516b244";
+
+const makeEasAttestation = async (nominator: string, nominated: string) => {
+  const signer = new Wallet(process.env.EAS_SIGNER_PRIVATE_KEY as string)
+  const eas = new EAS(easContractAddress);
+  // Signer must be an ethers-like signer.
+  eas.connect(signer as any);
+  // Initialize SchemaEncoder with the schema string
+  const schemaEncoder = new SchemaEncoder("address nominator");
+  const encodedData = schemaEncoder.encodeData([
+    { name: "nominator", value: nominator, type: "address" }
+  ]);
+  const tx = await eas.attest({
+    schema: schemaUID,
+    data: {
+      recipient: nominated,
+      expirationTime: BigInt(0),
+      revocable: true,
+      data: encodedData,
+    },
+  });
+  // const newAttestationUID = await tx.wait();
+  await tx.wait();
+}
 
 export const getNomination = async (
   user: User,
@@ -267,6 +295,9 @@ export const createNewNomination = async (
       user_to_update: nominatedWallet.userId,
     });
   }
+
+  // TODO: which wallet?
+  await makeEasAttestation(nominatorUser.wallets[0].wallet, nominatedWallet.wallet);
 
   revalidatePath(`/airdrop`);
   revalidatePath(`/airdrop/nominate/${nominatedWallet.wallet}`);
