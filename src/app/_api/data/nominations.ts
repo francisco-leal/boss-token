@@ -460,9 +460,108 @@ export const getNominationsWeeklyStatsForUser = async (
         pointsEarned:
           (nominationsSent?.build_points_sent ?? 0) +
           (nominationsReceived?.build_points_received ?? 0),
+        user: {
+          id: user.id,
+          username: user.username,
+          farcasterId: user.farcaster_id,
+        },
       };
     },
     [`nominations_weekly_stats_${user.id}`] as CacheKey[],
+    { revalidate: CACHE_5_MINUTES },
+  )();
+};
+
+export const getNominationsWeeklyStats = async () => {
+  return unstable_cache(
+    async () => {
+      const allUsers = await supabase
+        .from("users")
+        .select(
+          `
+          *,
+          wallets (
+            *
+          ),
+          boss_leaderboard (
+            *
+          )
+        `,
+        )
+        .throwOnError()
+        .then((res) => res.data);
+      console.log("[BG] allUsers number:", allUsers?.length);
+      console.log("[BG] example user:", allUsers?.[0]);
+      if (!allUsers) return [];
+      const allStats = await Promise.all(
+        allUsers.map((u) => getNominationsWeeklyStatsForUser(u)),
+      );
+      return allStats;
+    },
+    [`nominations_weekly_stats_${Date.now()}`] as CacheKey[],
+    { revalidate: CACHE_5_MINUTES },
+  )();
+};
+
+export const getNominationsWeeklyReminder = async () => {
+  return unstable_cache(
+    async () => {
+      const filterDate = DateTime.local().minus({ days: 7 }).toISO();
+
+      const latestNominations = await supabase
+        .from("boss_nominations")
+        .select(
+          `
+          origin_user_id,
+          created_at,
+          valid  
+        `,
+        )
+        .eq("valid", true)
+        .gt("created_at", filterDate)
+        .throwOnError()
+        .then((res) => res.data);
+
+      const usersWhoHaveNominated = new Set<string>();
+      if (latestNominations) {
+        for (const nomination of latestNominations) {
+          usersWhoHaveNominated.add(nomination.origin_user_id);
+        }
+      }
+
+      console.log("[BG] goodUsers number:", usersWhoHaveNominated.size);
+
+      const filterString = `(${Array.from(usersWhoHaveNominated).join(",")})`;
+
+      const users = await supabase
+        .from("users")
+        .select(
+          `
+          id,
+          username,
+          boss_budget,
+          nominations_made,
+          farcaster_id,
+          last_wallet,
+          last_budget_calculation  
+        `,
+        )
+        .not("id", "in", filterString)
+        .throwOnError()
+        .then((res) => res.data);
+
+      console.log("[BG] users to ping", users?.length);
+      return (
+        users?.map((u) => ({
+          nominationsBudget: u.boss_budget,
+          nominationsSent: u.nominations_made ?? 0,
+          farcasterId: u.farcaster_id,
+          username: u.username,
+          wallet: u.last_wallet,
+        })) ?? []
+      );
+    },
+    [`nominations_reminder_${Date.now()}`] as CacheKey[],
     { revalidate: CACHE_5_MINUTES },
   )();
 };
